@@ -7,11 +7,16 @@ Protocolo:  Docs/IIC communication protocol.pdf  (esclavo 0x26)
 Plataforma: Raspberry Pi 5 (bus I2C-1)
 """
 
+import errno
 import struct
 import sys
 import time
 
 import smbus
+
+# Reintentos ante fallo I2C (p. ej. errno 121 Remote I/O)
+I2C_RETRY_DELAY = 0.05
+I2C_MAX_RETRIES = 2
 
 
 class Board:
@@ -32,12 +37,12 @@ class Board:
     SPEED_MIN, SPEED_MAX = -1000, 1000
     PWM_MIN, PWM_MAX     = -3600, 3600
 
-    # ── Perfiles de motor predefinidos ────────────────────────────────────
-    # Diámetro del perfil 1 ajustado a 60 mm (radio 3 cm).
+    # ── Perfiles de motor predefinidos (registros 0x01–0x05) ───────────────
+    # Tipo 3 = TT motor with encoder (protocolo: 0x01 = 3). Diámetro 60 mm = radio 3 cm.
     MOTOR_PROFILES = {
         1: {"type": 1, "phase": 30, "line": 11, "wheel_dia": 60.0,  "deadzone": 1900},
         2: {"type": 2, "phase": 20, "line": 13, "wheel_dia": 48.0,  "deadzone": 1600},
-        3: {"type": 3, "phase": 45, "line": 13, "wheel_dia": 68.0,  "deadzone": 1250},
+        3: {"type": 3, "phase": 45, "line": 13, "wheel_dia": 60.0,  "deadzone": 1250},  # TT con encoder
         4: {"type": 4, "phase": 48, "line": 0,  "wheel_dia": 0.0,   "deadzone": 1000},
         5: {"type": 1, "phase": 40, "line": 11, "wheel_dia": 60.0,  "deadzone": 1900},
     }
@@ -50,32 +55,64 @@ class Board:
         self._motor_type = None
 
     def close(self):
-        """Cierra el bus I2C."""
-        if self._bus is not None:
+        """Cierra el bus I2C. Ignora errores al parar motores si la comunicación falló."""
+        if self._bus is None:
+            return
+        try:
             self.stop()
+        except OSError:
+            pass
+        try:
             self._bus.close()
-            self._bus = None
+        except OSError:
+            pass
+        self._bus = None
 
     # ── I2C bajo nivel ────────────────────────────────────────────────────
 
     def _i2c_write(self, reg, data):
-        """Escribe *data* (int o lista de bytes) en *reg*."""
+        """Escribe *data* (int o lista de bytes) en *reg*. Reintenta una vez ante fallo I2C."""
         if isinstance(data, (list, tuple)):
             data = list(data)
-            if len(data) == 1:
-                self._bus.write_byte_data(self._addr, reg, data[0] & 0xFF)
-            else:
-                self._bus.write_i2c_block_data(self._addr, reg, data)
-        else:
-            self._bus.write_byte_data(self._addr, reg, data & 0xFF)
+        last_err = None
+        for attempt in range(I2C_MAX_RETRIES):
+            try:
+                if isinstance(data, list):
+                    if len(data) == 1:
+                        self._bus.write_byte_data(self._addr, reg, data[0] & 0xFF)
+                    else:
+                        self._bus.write_i2c_block_data(self._addr, reg, data)
+                else:
+                    self._bus.write_byte_data(self._addr, reg, data & 0xFF)
+                return
+            except OSError as e:
+                last_err = e
+                err = getattr(e, "errno", None)
+                if err in (errno.EIO, getattr(errno, "EREMOTEIO", 121), 121) and attempt < I2C_MAX_RETRIES - 1:
+                    time.sleep(I2C_RETRY_DELAY)
+                    continue
+                raise
+        if last_err is not None:
+            raise last_err
 
     def _i2c_read(self, reg, length):
-        """Lee *length* bytes desde *reg* y devuelve lista."""
-        return list(self._bus.read_i2c_block_data(self._addr, reg, length))
+        """Lee *length* bytes desde *reg*. Reintenta una vez; si falla, devuelve lista de ceros."""
+        for attempt in range(I2C_MAX_RETRIES):
+            try:
+                return list(self._bus.read_i2c_block_data(self._addr, reg, length))
+            except OSError as e:
+                err = getattr(e, "errno", None)
+                if err in (errno.EIO, getattr(errno, "EREMOTEIO", 121), 121) and attempt < I2C_MAX_RETRIES - 1:
+                    time.sleep(I2C_RETRY_DELAY)
+                    continue
+                # Fallo definitivo en lectura: devolver ceros para no tumbar el programa
+                return [0] * length
+        return [0] * length
 
     # ── Configuración de parámetros del motor ─────────────────────────────
 
     def _set_motor_type(self, tipo):
+        """Escribe registro 0x01: 1=520, 2=310, 3=TT con encoder, 4=TT sin encoder (obligatorio)."""
         self._i2c_write(self.REG_MOTOR_TYPE, [tipo & 0xFF])
         time.sleep(0.1)
 
