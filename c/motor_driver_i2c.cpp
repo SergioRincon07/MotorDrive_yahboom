@@ -89,9 +89,10 @@ void MotorDriverI2C::setPluseLine(uint16_t line) {
     usleep(100000);
 }
 
-void MotorDriverI2C::setWheelDis(uint16_t mm_100) {
-    uint8_t buf[] = { (uint8_t)((mm_100 >> 8) & 0xFF), (uint8_t)(mm_100 & 0xFF) };
-    i2cWrite(WHEEL_DIA_REG, buf, 2);
+void MotorDriverI2C::setWheelDis(float mm) {
+    uint8_t buf[4];
+    memcpy(buf, &mm, 4);
+    i2cWrite(WHEEL_DIA_REG, buf, 4);
     usleep(100000);
 }
 
@@ -106,19 +107,19 @@ void MotorDriverI2C::setMotorParameter() {
         setMotorType(1);
         setPlusePhase(30);
         setPluseLine(11);
-        setWheelDis(6700);  // 67.00 mm
+        setWheelDis(67.0f);
         setMotorDeadzone(1900);
     } else if (MOTOR_TYPE == 2) {
         setMotorType(2);
         setPlusePhase(20);
         setPluseLine(13);
-        setWheelDis(4800);
+        setWheelDis(48.0f);
         setMotorDeadzone(1600);
     } else if (MOTOR_TYPE == 3) {
         setMotorType(3);
         setPlusePhase(45);
         setPluseLine(13);
-        setWheelDis(6800);
+        setWheelDis(68.0f);
         setMotorDeadzone(1250);
     } else if (MOTOR_TYPE == 4) {
         setMotorType(4);
@@ -128,7 +129,7 @@ void MotorDriverI2C::setMotorParameter() {
         setMotorType(1);
         setPlusePhase(40);
         setPluseLine(11);
-        setWheelDis(6700);
+        setWheelDis(67.0f);
         setMotorDeadzone(1900);
     }
 }
@@ -142,7 +143,7 @@ void MotorDriverI2C::controlSpeed(int16_t m1, int16_t m2, int16_t m3, int16_t m4
         buf[i*2+1] = (uint8_t)(u & 0xFF);
     };
     pack(0, m1); pack(1, m2); pack(2, m3); pack(3, m4);
-    i2cWrite(RUN_REG, buf, 8);
+    i2cWrite(SPEED_REG, buf, 8);
 }
 
 void MotorDriverI2C::controlPwm(int16_t m1, int16_t m2, int16_t m3, int16_t m4) {
@@ -166,18 +167,18 @@ void MotorDriverI2C::controlPwm(int16_t m1, int16_t m2, int16_t m3, int16_t m4) 
         buf[i*2+1] = (uint8_t)(u & 0xFF);
     };
     pack(0, m1); pack(1, m2); pack(2, m3); pack(3, m4);
-    i2cWrite(RUN_REG, buf, 8);
+    i2cWrite(PWM_REG, buf, 8);
 }
 
-void MotorDriverI2C::stopMotors(uint8_t brake) {
-    uint8_t b = brake & 0xFF;
-    i2cWrite(STOP_REG, &b, 1);
+void MotorDriverI2C::stopMotors(uint8_t /*brake*/) {
+    uint8_t buf[8] = { 0, 0, 0, 0, 0, 0, 0, 0 };
+    i2cWrite(SPEED_REG, buf, 8);
 }
 
 void MotorDriverI2C::read10Encoder(std::array<int16_t, 4>& out) {
     for (int i = 0; i < 4; i++) {
         uint8_t buf[2];
-        uint8_t reg = READ_TEN_M1_ENCODER_REG + (i * 2);
+        uint8_t reg = READ_TEN_M1_ENCODER_REG + i;  // 0x10, 0x11, 0x12, 0x13
         if (!i2cRead(reg, buf, 2)) { out[i] = 0; continue; }
         int16_t v = (int16_t)((buf[0] << 8) | buf[1]);
         out[i] = v;
@@ -187,8 +188,8 @@ void MotorDriverI2C::read10Encoder(std::array<int16_t, 4>& out) {
 void MotorDriverI2C::readAllEncoder(std::array<int32_t, 4>& out) {
     for (int i = 0; i < 4; i++) {
         uint8_t hb[2], lb[2];
-        uint8_t hr = READ_ALLHIGH_M1_REG + (i * 2);
-        uint8_t lr = READ_ALLLOW_M1_REG + (i * 2);
+        uint8_t hr = READ_ALLHIGH_M1_REG + (i * 2);  // 0x20, 0x22, 0x24, 0x26
+        uint8_t lr = READ_ALLLOW_M1_REG + (i * 2);   // 0x21, 0x23, 0x25, 0x27
         if (!i2cRead(hr, hb, 2) || !i2cRead(lr, lb, 2)) { out[i] = 0; continue; }
         uint32_t high = (hb[0] << 8) | hb[1];
         uint32_t low  = (lb[0] << 8) | lb[1];
