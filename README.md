@@ -10,7 +10,9 @@ MotorDrive_yahboom/
 ├── Docs/
 │   └── IIC communication protocol.pdf   # Protocolo I2C oficial (0x26)
 ├── python/
-│   └── motor_driver_i2c.py
+│   ├── Board.py               # Clase Board: configuración I2C y control de hardware
+│   ├── MotorControlDemo.py    # Demo interactiva (usa Board.py)
+│   └── motor_driver_i2c.py   # (referencia original, archivo monolítico)
 └── c/
     ├── Makefile
     ├── motor_driver_i2c.hpp
@@ -70,33 +72,32 @@ i2cdetect -y 1
 
 En la tabla debe aparecer una dirección en hexadecimal. En este proyecto la placa Yahboom se ha detectado en **0x26** (algunas placas usan **0x16**). Tanto el código Python como el C++ están configurados con `MOTOR_MODEL_ADDR = 0x26`; si tu placa responde en otra dirección, cámbiala en:
 
-- **Python:** `python/motor_driver_i2c.py` → `MOTOR_MODEL_ADDR = 0x??`
+- **Python (nuevo):** `python/MotorControlDemo.py` → `I2C_ADDR = 0x??`  (o `Board(addr=0x??)`)
+- **Python (referencia):** `python/motor_driver_i2c.py` → `MOTOR_MODEL_ADDR = 0x??`
 - **C++:** `c/motor_driver_i2c.hpp` → `MOTOR_MODEL_ADDR = 0x??`
 
 Si no ves ningún dispositivo, revisa cableado (SDA→pin 3, SCL→pin 5, GND, alimentación) y que I2C esté habilitado. Para usar `i2cdetect` sin sudo, añade tu usuario al grupo `i2c`: `sudo usermod -aG i2c $USER` y cierra sesión/reinicia.
 
 ## Uso
 
-### Python (`python/`)
+### Python (`python/`) – Board.py + MotorControlDemo.py
 
 - Requiere `smbus`: `sudo apt install python3-smbus` (o `python3-smbus` según distro).
-- Por defecto solo se controlan **M2 y M4** (el resto se envían a 0).
+- **`Board.py`** – Clase `Board` que encapsula toda la comunicación I2C: registros, perfiles de motor, control de velocidad/PWM y lectura de encoders.
+- **`MotorControlDemo.py`** – Menú interactivo para probar la placa: diagnóstico I2C, test PWM, test velocidad, rampa, lectura de encoders.
 
 ```bash
 # Desde la raíz del proyecto
-sudo python3 python/motor_driver_i2c.py
+sudo python3 python/MotorControlDemo.py
 ```
 
-Para usar los 4 motores, en `python/motor_driver_i2c.py` cambia:
+Los parámetros de la demo se configuran al inicio de `MotorControlDemo.py`:
 
-```python
-MOTORS_ENABLED = (True, True, True, True)  # (M1, M2, M3, M4)
-```
+- `MOTOR_TYPE`: `1` (520), `2` (310), `3` (TT+encoder), `4` (TT DC sin encoder), `5` (L-type 520).
+- `TEST_PWM_VAL` / `TEST_SPD_VAL`: valores para las pruebas de M2/M4.
+- `I2C_ADDR`: dirección de la placa (por defecto `0x26`).
 
-Ajusta también al inicio del archivo:
-
-- `UPLOAD_DATA`: `1` = encoder acumulado, `2` = encoder cada 10 ms.
-- `MOTOR_TYPE`: `1` (520), `2` (310), `3` (TT码盘), `4` (TT DC sin encoder), `5` (L-type 520).
+> El archivo `motor_driver_i2c.py` se mantiene como referencia del código original monolítico.
 
 ### C++ (`c/`)
 
@@ -114,14 +115,17 @@ Para habilitar los 4 motores, en `c/motor_driver_i2c.hpp`:
 constexpr std::array<bool, 4> MOTORS_ENABLED = { true, true, true, true };
 ```
 
-## API resumida (Python)
+## API resumida (Python – Board.py)
 
-- `set_motor_parameter()` – Aplica parámetros según `MOTOR_TYPE`.
-- `control_speed(m1, m2, m3, m4)` – Velocidad (motores con encoder).
-- `control_pwm(m1, m2, m3, m4)` – PWM directo (tipo 4, sin encoder).
-- `stop_motors(brake=1)` – Parar todos.
-- `read_all_encoder()` / `read_10_encoder()` – Lectura encoders (string).
-- `get_encoder_all_list()` / `get_encoder_10_list()` – Encoders como lista.
+- `Board(bus_num=1, addr=0x26)` – Constructor: abre el bus I2C.
+- `board.scan()` – Verifica conectividad con la placa (retorna `True`/`False`).
+- `board.configure(motor_type)` – Aplica perfil completo (tipo, fase, líneas, diámetro, deadzone).
+- `board.set_speed(m1, m2, m3, m4)` – Velocidad con encoder (-1000~1000).
+- `board.set_pwm(m1, m2, m3, m4)` – PWM directo (-3600~3600).
+- `board.stop()` – Parar todos los motores.
+- `board.read_encoder_10ms()` – Encoder 10 ms → `{1: val, 2: val, 3: val, 4: val}`.
+- `board.read_encoder_total()` – Encoder acumulado 32 bits → `{1: val, 2: val, 3: val, 4: val}`.
+- `board.close()` – Cierra el bus I2C.
 
 ## API resumida (C++)
 
@@ -148,14 +152,14 @@ El protocolo está implementado según **`Docs/IIC communication protocol.pdf`**
 | 0x10–0x13 | Lectura encoder 10 ms M1–M4 |
 | 0x20/0x21, 0x22/0x23, … | Encoder total 32 bits (high/low) por motor |
 
-Para cambiar direcciones o registros: **Python** → `python/motor_driver_i2c.py`; **C++** → `c/motor_driver_i2c.hpp`.
+Para cambiar direcciones o registros: **Python** → `python/Board.py` (constantes de clase); **C++** → `c/motor_driver_i2c.hpp`.
 
 ## Pruebas solo con M2 y M4
 
 1. Conectar solo los motores 2 y 4 a la placa.
-2. Dejar `MOTORS_ENABLED` con solo M2 y M4 en `True`.
-3. Ejecutar `sudo python3 python/motor_driver_i2c.py` o, desde `c/`, `sudo ./motor_test`.
-4. Deberías ver: rampa de velocidad en M2 y M4 y valores de encoder. **Si no se mueven:** (1) Conecta batería a los bornes de motores de la placa. (2) Prueba `MOTOR_TYPE = 4` en el código (TT sin encoder) para usar PWM (registro 0x07). (3) El script hace al inicio una prueba con PWM y otra con velocidad.
+2. Ejecutar `sudo python3 python/MotorControlDemo.py` (o desde `c/`, `sudo ./motor_test`).
+3. Usar el menú interactivo: primero diagnóstico I2C (opción 1), luego test PWM (opción 3) o test velocidad (opción 4).
+4. **Si no se mueven:** (1) Conecta batería a los bornes de motores de la placa. (2) Prueba `MOTOR_TYPE = 4` en `MotorControlDemo.py` para usar PWM (registro 0x07). (3) La opción 5 (rampa) incrementa velocidad gradualmente.
 
 ## Referencias
 
